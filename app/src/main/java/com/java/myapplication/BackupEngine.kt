@@ -3,6 +3,7 @@ package com.java.myapplication
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.documentfile.provider.DocumentFile
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -20,17 +21,15 @@ object BackupEngine {
         uris: List<Uri>,
         config: BackupConfig,
         compress: Boolean = true,
-        onProgress: (String) -> Unit = {}
+        onProgress: (String) -> Unit = {},
     ): String {
-        require(config.endpoint.startsWith("http://") || config.endpoint.startsWith("https://")) {
-            "WebDAV 地址必须以 http:// 或 https:// 开头"
-        }
+        validateConfig(config)
         require(uris.isNotEmpty()) { "请至少选择一个文件" }
 
         onProgress("正在准备备份文件…")
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val payloadName = if (compress) "webdav_backup_$timestamp.zip" else safeName(context, uris.first())
-        val payload = if (compress) createZip(context, uris) else readUri(context, uris.first())
+        val payloadName = if (compress || uris.size > 1) "webdav_backup_$timestamp.zip" else safeName(context, uris.first())
+        val payload = if (compress || uris.size > 1) createZip(context, uris) else readUri(context, uris.first())
 
         onProgress("正在上传到 WebDAV…")
         upload(config, payloadName, payload)
@@ -41,11 +40,11 @@ object BackupEngine {
         context: Context,
         config: BackupConfig,
         compress: Boolean = true,
-        onProgress: (String) -> Unit = {}
+        onProgress: (String) -> Unit = {},
     ): String {
-        val directory = File(context.filesDir, "backup-selection")
-        val files = directory.listFiles()?.filter { it.isFile }.orEmpty()
-        require(files.isNotEmpty()) { "没有可自动备份的缓存文件，请先手动选择文件" }
+        validateConfig(config)
+        val files = cachedFiles(context)
+        require(files.isNotEmpty()) { "没有可自动备份的缓存文件，请先手动选择文件或文件夹" }
 
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val payloadName = if (compress || files.size > 1) "webdav_backup_$timestamp.zip" else files.first().name
@@ -54,15 +53,15 @@ object BackupEngine {
             ByteArrayOutputStream().use { output ->
                 ZipOutputStream(output).use { zip ->
                     files.forEach { file ->
-                        zip.putNextEntry(ZipEntry(file.name))
-                        file.inputStream().use { it.copyTo(zip) }
+                        zip.putNextEntry(ZipEntry(file.relativePath))
+                        File(file.absolutePath).inputStream().use { it.copyTo(zip) }
                         zip.closeEntry()
                     }
                 }
                 output.toByteArray()
             }
         } else {
-            files.first().readBytes()
+            File(files.first().absolutePath).readBytes()
         }
 
         onProgress("正在上传到 WebDAV…")
@@ -70,16 +69,86 @@ object BackupEngine {
         return "备份完成：$payloadName"
     }
 
-    fun cacheSelection(context: Context, uris: List<Uri>) {
-        val directory = File(context.filesDir, "backup-selection")
-        if (directory.exists()) directory.deleteRecursively()
-        directory.mkdirs()
+    fun cacheSelection(context: Context, uris: List<Uri>): List<CachedBackupItem> {
+        val directory = cacheDirectory(context).also { it.mkdirs() }
+        val startIndex = cachedFiles(context).size
         uris.forEachIndexed { index, uri ->
-            val name = "${index + 1}_${safeName(context, uri)}"
+            val name = "${startIndex + index + 1}_${safeName(context, uri)}"
             context.contentResolver.openInputStream(uri)?.use { input ->
                 File(directory, name).outputStream().use { output -> input.copyTo(output) }
             }
         }
+        return cachedFiles(context)
+    }
+
+    fun cacheFolder(context: Context, treeUri: Uri): List<CachedBackupItem> {
+        cacheDirectory(context).mkdirs()
+        val root = DocumentFile.fromTreeUri(context, treeUri) ?: return cachedFiles(context)
+        copyDocumentTree(context, root, root.name ?: "folder")
+        return cachedFiles(context)
+    }
+
+    fun cachedFiles(context: Context): List<CachedBackupItem> {
+        val root = cacheDirectory(context)
+        if (!root.exists()) return emptyList()
+        return root.walkTopDown()
+            .filter { it.isFile }
+            .map { file ->
+                CachedBackupItem(
+                    name = file.name,
+                    relativePath = file.relativeTo(root).path.replace(File.separatorChar, '/'),
+                    absolutePath = file.absolutePath,
+                    sizeBytes = file.length(),
+                )
+            }
+            .sortedBy { it.relativePath }
+            .toList()
+    }
+
+    fun removeCachedItem(context: Context, relativePath: String): List<CachedBackupItem> {
+        val root = cacheDirectory(context)
+        File(root, relativePath).takeIf { it.exists() && it.isFile }?.delete()
+        removeEmptyDirectories(root)
+        return cachedFiles(context)
+    }
+
+    fun clearCache(context: Context): List<CachedBackupItem> {
+        resetCache(context)
+        return emptyList()
+    }
+
+    private fun validateConfig(config: BackupConfig) {
+        require(config.endpoint.startsWith("http://") || config.endpoint.startsWith("https://")) {
+            "WebDAV 地址必须以 http:// 或 https:// 开头"
+        }
+    }
+
+    private fun resetCache(context: Context) {
+        val directory = cacheDirectory(context)
+        if (directory.exists()) directory.deleteRecursively()
+        directory.mkdirs()
+    }
+
+    private fun cacheDirectory(context: Context): File = File(context.filesDir, "backup-selection")
+
+    private fun copyDocumentTree(context: Context, document: DocumentFile, relativePath: String) {
+        val safeRelativePath = relativePath.trim('/').ifBlank { document.name ?: "folder" }
+        if (document.isDirectory) {
+            document.listFiles().forEach { child ->
+                val childName = child.name?.replace(Regex("[\\/:*?\"<>|]"), "_") ?: "item"
+                copyDocumentTree(context, child, "$safeRelativePath/$childName")
+            }
+        } else if (document.isFile) {
+            val output = File(cacheDirectory(context), safeRelativePath)
+            output.parentFile?.mkdirs()
+            context.contentResolver.openInputStream(document.uri)?.use { input ->
+                output.outputStream().use { input.copyTo(it) }
+            }
+        }
+    }
+
+    private fun removeEmptyDirectories(root: File) {
+        root.walkBottomUp().filter { it.isDirectory && it != root && it.listFiles().isNullOrEmpty() }.forEach { it.delete() }
     }
 
     private fun createZip(context: Context, uris: List<Uri>): ByteArray {
@@ -113,7 +182,7 @@ object BackupEngine {
             if (config.username.isNotBlank() || config.password.isNotBlank()) {
                 val token = android.util.Base64.encodeToString(
                     "${config.username}:${config.password}".toByteArray(),
-                    android.util.Base64.NO_WRAP
+                    android.util.Base64.NO_WRAP,
                 )
                 setRequestProperty("Authorization", "Basic $token")
             }
@@ -141,6 +210,13 @@ object BackupEngine {
     private fun String.encodePathSegment(): String =
         split('/').joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20") }
 }
+
+data class CachedBackupItem(
+    val name: String,
+    val relativePath: String,
+    val absolutePath: String,
+    val sizeBytes: Long,
+)
 
 data class BackupConfig(
     val endpoint: String,
