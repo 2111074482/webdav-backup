@@ -1,6 +1,5 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
@@ -47,17 +46,7 @@ android {
     }
 }
 
-// Force use of ARM64 binaries for AAPT2 in Proot environment
-configurations.all {
-    resolutionStrategy.eachDependency {
-        if (requested.group == "com.android.tools.build" && requested.name == "aapt2") {
-            useTarget("com.android.tools.build:aapt2:${'$'}{requested.version}:linux-aarch64")
-        }
-    }
-}
-
 dependencies {
-
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
