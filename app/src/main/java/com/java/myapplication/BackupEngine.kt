@@ -71,11 +71,11 @@ object BackupEngine {
 
     fun cacheSelection(context: Context, uris: List<Uri>): List<CachedBackupItem> {
         val directory = cacheDirectory(context).also { it.mkdirs() }
-        val startIndex = cachedFiles(context).size
-        uris.forEachIndexed { index, uri ->
-            val name = "${startIndex + index + 1}_${safeName(context, uri)}"
+        uris.forEach { uri ->
+            val originalName = safeName(context, uri)
+            val output = uniqueFile(directory, originalName)
             context.contentResolver.openInputStream(uri)?.use { input ->
-                File(directory, name).outputStream().use { output -> input.copyTo(output) }
+                output.outputStream().use { input.copyTo(output) }
             }
         }
         return cachedFiles(context)
@@ -94,9 +94,11 @@ object BackupEngine {
         return root.walkTopDown()
             .filter { it.isFile }
             .map { file ->
+                val relativePath = file.relativeTo(root).path.replace(File.separatorChar, '/')
                 CachedBackupItem(
                     name = file.name,
-                    relativePath = file.relativeTo(root).path.replace(File.separatorChar, '/'),
+                    displayName = displayNameFor(relativePath),
+                    relativePath = relativePath,
                     absolutePath = file.absolutePath,
                     sizeBytes = file.length(),
                 )
@@ -135,7 +137,7 @@ object BackupEngine {
         val safeRelativePath = relativePath.trim('/').ifBlank { document.name ?: "folder" }
         if (document.isDirectory) {
             document.listFiles().forEach { child ->
-                val childName = child.name?.replace(Regex("[\\/:*?\"<>|]"), "_") ?: "item"
+                val childName = child.name?.replace(Regex("[\\\\/:*?\"<>|]"), "_") ?: "item"
                 copyDocumentTree(context, child, "$safeRelativePath/$childName")
             }
         } else if (document.isFile) {
@@ -150,6 +152,25 @@ object BackupEngine {
     private fun removeEmptyDirectories(root: File) {
         root.walkBottomUp().filter { it.isDirectory && it != root && it.listFiles().isNullOrEmpty() }.forEach { it.delete() }
     }
+
+    private fun uniqueFile(directory: File, originalName: String): File {
+        var candidate = File(directory, originalName)
+        if (!candidate.exists()) return candidate
+        val dotIndex = originalName.lastIndexOf('.').takeIf { it > 0 }
+        val base = dotIndex?.let { originalName.substring(0, it) } ?: originalName
+        val ext = dotIndex?.let { originalName.substring(it) }.orEmpty()
+        var counter = 2
+        while (candidate.exists()) {
+            candidate = File(directory, "${base} (${counter})${ext}")
+            counter++
+        }
+        return candidate
+    }
+
+    private fun displayNameFor(relativePath: String): String = relativePath
+        .substringAfterLast('/')
+        .replace(Regex("^\\d+_"), "")
+        .ifBlank { relativePath }
 
     private fun createZip(context: Context, uris: List<Uri>): ByteArray {
         return ByteArrayOutputStream().use { output ->
@@ -213,6 +234,7 @@ object BackupEngine {
 
 data class CachedBackupItem(
     val name: String,
+    val displayName: String,
     val relativePath: String,
     val absolutePath: String,
     val sizeBytes: Long,
