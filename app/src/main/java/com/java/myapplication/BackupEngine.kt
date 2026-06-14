@@ -75,7 +75,7 @@ object BackupEngine {
             val originalName = safeName(context, uri)
             val output = uniqueFile(directory, originalName)
             context.contentResolver.openInputStream(uri)?.use { input ->
-                output.outputStream().use { input.copyTo(output) }
+                output.outputStream().use { stream -> input.copyTo(stream) }
             }
         }
         return cachedFiles(context)
