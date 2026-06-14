@@ -9,7 +9,7 @@ pluginManagement {
             content {
                 includeGroupByRegex("com\\.android.*")
                 includeGroupByRegex("com\\.google.*")
-                includeGroupByRegex("androidx*")
+                includeGroupByRegex("androidx.*")
             }
         }
         mavenCentral()
@@ -30,3 +30,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "My Application"
 include(":app")
+ 
