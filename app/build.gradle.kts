@@ -43,7 +43,17 @@ android {
     }
 }
 
+// Force use of ARM64 binaries for AAPT2 in Proot environment
+configurations.all {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "com.android.tools.build" && requested.name == "aapt2") {
+            useTarget("com.android.tools.build:aapt2:${'$'}{requested.version}:linux-aarch64")
+        }
+    }
+}
+
 dependencies {
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -54,6 +64,7 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
     implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.documentfile)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
