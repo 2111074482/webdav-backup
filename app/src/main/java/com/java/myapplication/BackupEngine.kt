@@ -7,6 +7,7 @@ import androidx.documentfile.provider.DocumentFile
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.Properties
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
@@ -16,6 +17,8 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 object BackupEngine {
+    private const val METADATA_FILE = ".display-names.properties"
+
     fun backup(
         context: Context,
         uris: List<Uri>,
@@ -72,11 +75,12 @@ object BackupEngine {
     fun cacheSelection(context: Context, uris: List<Uri>): List<CachedBackupItem> {
         val directory = cacheDirectory(context).also { it.mkdirs() }
         uris.forEach { uri ->
-            val originalName = safeName(context, uri)
-            val output = uniqueFile(directory, originalName)
+            val displayName = originalDisplayName(context, uri)
+            val output = uniqueFile(directory, sanitizeFileName(displayName))
             context.contentResolver.openInputStream(uri)?.use { input ->
                 output.outputStream().use { stream -> input.copyTo(stream) }
             }
+            storeDisplayName(context, output.relativeTo(directory).path.replace(File.separatorChar, '/'), displayName)
         }
         return cachedFiles(context)
     }
@@ -91,13 +95,14 @@ object BackupEngine {
     fun cachedFiles(context: Context): List<CachedBackupItem> {
         val root = cacheDirectory(context)
         if (!root.exists()) return emptyList()
+        val displayNames = loadDisplayNames(context)
         return root.walkTopDown()
-            .filter { it.isFile }
+            .filter { it.isFile && it.name != METADATA_FILE }
             .map { file ->
                 val relativePath = file.relativeTo(root).path.replace(File.separatorChar, '/')
                 CachedBackupItem(
                     name = file.name,
-                    displayName = displayNameFor(relativePath),
+                    displayName = displayNames.getProperty(relativePath) ?: displayNameFor(relativePath),
                     relativePath = relativePath,
                     absolutePath = file.absolutePath,
                     sizeBytes = file.length(),
@@ -110,6 +115,7 @@ object BackupEngine {
     fun removeCachedItem(context: Context, relativePath: String): List<CachedBackupItem> {
         val root = cacheDirectory(context)
         File(root, relativePath).takeIf { it.exists() && it.isFile }?.delete()
+        removeDisplayName(context, relativePath)
         removeEmptyDirectories(root)
         return cachedFiles(context)
     }
@@ -133,19 +139,40 @@ object BackupEngine {
 
     private fun cacheDirectory(context: Context): File = File(context.filesDir, "backup-selection")
 
+    private fun metadataFile(context: Context): File = File(cacheDirectory(context), METADATA_FILE)
+
+    private fun loadDisplayNames(context: Context): Properties = Properties().apply {
+        val file = metadataFile(context)
+        if (file.exists()) file.inputStream().use { load(it) }
+    }
+
+    private fun storeDisplayName(context: Context, relativePath: String, displayName: String) {
+        val properties = loadDisplayNames(context)
+        properties.setProperty(relativePath, displayName)
+        metadataFile(context).outputStream().use { properties.store(it, "Cached backup display names") }
+    }
+
+    private fun removeDisplayName(context: Context, relativePath: String) {
+        val properties = loadDisplayNames(context)
+        properties.remove(relativePath)
+        metadataFile(context).outputStream().use { properties.store(it, "Cached backup display names") }
+    }
+
     private fun copyDocumentTree(context: Context, document: DocumentFile, relativePath: String) {
-        val safeRelativePath = relativePath.trim('/').ifBlank { document.name ?: "folder" }
+        val safeRelativePath = sanitizeRelativePath(relativePath.trim('/').ifBlank { document.name ?: "folder" })
         if (document.isDirectory) {
             document.listFiles().forEach { child ->
-                val childName = child.name?.replace(Regex("[\\\\/:*?\"<>|]"), "_") ?: "item"
+                val childName = sanitizeFileName(child.name ?: "item")
                 copyDocumentTree(context, child, "$safeRelativePath/$childName")
             }
         } else if (document.isFile) {
-            val output = File(cacheDirectory(context), safeRelativePath)
+            val output = uniqueFile(cacheDirectory(context), safeRelativePath)
             output.parentFile?.mkdirs()
             context.contentResolver.openInputStream(document.uri)?.use { input ->
                 output.outputStream().use { input.copyTo(it) }
             }
+            val storedPath = output.relativeTo(cacheDirectory(context)).path.replace(File.separatorChar, '/')
+            storeDisplayName(context, storedPath, document.name ?: displayNameFor(storedPath))
         }
     }
 
@@ -156,16 +183,38 @@ object BackupEngine {
     private fun uniqueFile(directory: File, originalName: String): File {
         var candidate = File(directory, originalName)
         if (!candidate.exists()) return candidate
-        val dotIndex = originalName.lastIndexOf('.').takeIf { it > 0 }
-        val base = dotIndex?.let { originalName.substring(0, it) } ?: originalName
-        val ext = dotIndex?.let { originalName.substring(it) }.orEmpty()
+        val name = originalName.substringAfterLast('/')
+        val folder = originalName.substringBeforeLast('/', "")
+        val dotIndex = name.lastIndexOf('.').takeIf { it > 0 }
+        val base = dotIndex?.let { name.substring(0, it) } ?: name
+        val ext = dotIndex?.let { name.substring(it) }.orEmpty()
         var counter = 2
         while (candidate.exists()) {
-            candidate = File(directory, "${base} (${counter})${ext}")
+            val candidateName = "${base} (${counter})${ext}"
+            candidate = if (folder.isBlank()) File(directory, candidateName) else File(directory, "$folder/$candidateName")
             counter++
         }
         return candidate
     }
+
+    private fun originalDisplayName(context: Context, uri: Uri): String {
+        val displayName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+        }
+        return (displayName ?: uri.lastPathSegment?.substringAfterLast('/') ?: "file.bin").ifBlank { "file.bin" }
+    }
+
+    private fun sanitizeRelativePath(path: String): String = path
+        .split('/')
+        .filter { it.isNotBlank() }
+        .joinToString("/") { sanitizeFileName(it) }
+        .ifBlank { "folder" }
+
+    private fun sanitizeFileName(name: String): String = name
+        .replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_")
+        .trim()
+        .ifBlank { "file.bin" }
 
     private fun displayNameFor(relativePath: String): String = relativePath
         .substringAfterLast('/')
@@ -218,15 +267,7 @@ object BackupEngine {
         connection.disconnect()
     }
 
-    private fun safeName(context: Context, uri: Uri): String {
-        val displayName = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
-        }
-        return (displayName ?: uri.lastPathSegment ?: "file.bin")
-            .replace(Regex("[^A-Za-z0-9._-]"), "_")
-            .ifBlank { "file.bin" }
-    }
+    private fun safeName(context: Context, uri: Uri): String = sanitizeFileName(originalDisplayName(context, uri))
 
     private fun String.encodePathSegment(): String =
         split('/').joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20") }
