@@ -4,10 +4,8 @@ import android.content.Context
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -17,10 +15,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -76,10 +72,6 @@ import com.java.myapplication.ui.theme.MyApplicationTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-        )
         setContent {
             MyApplicationTheme(dynamicColor = false) {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -179,8 +171,7 @@ fun WebDavBackupScreen(modifier: Modifier = Modifier) {
         modifier = modifier
             .fillMaxSize()
             .background(Brush.verticalGradient(listOf(Color(0xFF0E1525), Color(0xFF131E33), Color(0xFF0B1120))))
-            .statusBarsPadding()
-            .navigationBarsPadding()
+            .safeDrawingPadding()
             .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
         Column(
@@ -334,7 +325,6 @@ private fun SelectedItemsCard(items: List<CachedBackupItem>, onRemove: (CachedBa
                         Icon(Icons.Filled.InsertDriveFile, contentDescription = null, tint = Color(0xFF7DD3FC), modifier = Modifier.size(20.dp))
                         Column(Modifier.weight(1f)) {
                             Text(item.displayName, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(item.relativePath, color = Color(0xFF9FB3D9), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(formatSize(item.sizeBytes), color = Color(0xFF9FB3D9), style = MaterialTheme.typography.labelSmall)
                         }
                         IconButton(onClick = { onRemove(item) }) {
